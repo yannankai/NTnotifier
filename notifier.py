@@ -107,18 +107,31 @@ class VisaMonitor:
 
     def fetch_page(self):
         """获取网页内容"""
-        try:
-            resp = requests.get(
-                CONFIG["target_url"],
-                headers=self.headers,
-                timeout=20,
-                allow_redirects=True
-            )
-            resp.raise_for_status()
-            return resp.text
-        except Exception as e:
-            self.log(f"页面获取失败: {str(e)}", level="error")
-            return None
+        max_retries = 10
+        retry_count = 0
+        while retry_count <= max_retries:
+            try:
+                resp = requests.get(
+                    CONFIG["target_url"],
+                    headers=self.headers,
+                    timeout=20,
+                    allow_redirects=True
+                )
+                resp.raise_for_status()
+                return resp.text
+            except requests.exceptions.ConnectionError as e:
+                # 仅处理连接类异常（含10054）
+                retry_count += 1
+                if retry_count > self.max_retries:
+                    self.log(f"最终请求失败（重试{retry_count}次后）: {str(e)}", level="error")
+                    return None
+                # 计算等待时间（指数退避：1s → 2s → 4s → 8s...）
+                delay = self.initial_delay * (self.backoff_factor ** (retry_count - 1))
+                self.log(f"第{retry_count}次重试（等待{delay}秒后）...", level="info")
+                time.sleep(delay)
+            except Exception as e:
+                self.log(f"页面获取失败: {str(e)}", level="error")
+                return None
 
     def parse_content(self, html):
         """解析公告内容"""
