@@ -7,6 +7,10 @@ import json
 import os
 from urllib.parse import quote
 
+from urllib3.exceptions import ConnectTimeoutError
+
+from logger import Logger
+
 # ===== 配置区 =====
 CONFIG = {
     # 监控目标（北领地签证公告页面）
@@ -22,9 +26,11 @@ CONFIG = {
     # 监控参数
     "check_interval": 3600,  # 检查间隔(秒)
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "storage_file": "last_state.json"  # 状态存储文件
+    "storage_file": "last_state.json",  # 状态存储文件
+    "log_file": "visa_monitor.log",  # 日志文件路径（新增）
+    "max_log_size": 10 * 1024 * 1024,  # 单个日志文件最大10MB（新增）
+    "backup_log_count": 3  # 保留3个历史日志文件（新增）
 }
-
 
 # ===== 企业微信通知模块 =====
 class WeComNotifier:
@@ -79,9 +85,17 @@ class WeComNotifier:
 # ===== 网页监控模块 =====
 class VisaMonitor:
     def __init__(self):
+        self.logger = Logger(
+            log_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "visa_monitor.log"),  # 用户主目录下的日志文件
+            max_size=10 * 1024 * 1024,  # 10MB
+            backup_count=3,         # 保留3个历史文件
+            level="INFO"
+        )
         self.notifier = WeComNotifier(CONFIG["wecom"])
         self.headers = {"User-Agent": CONFIG["user_agent"]}
         self.last_state = self.load_state()
+        self.initial_delay = 1
+        self.backoff_factor = 2
 
     def send_bark(self, title, content, device_key):
         """
@@ -101,9 +115,9 @@ class VisaMonitor:
 
         response = requests.get(url, params=params)
         if response.json().get("code") == 200:
-            print("Bark通知发送成功")
+            self.logger.info("Bark通知发送成功")
         else:
-            print(f"发送失败: {response.text}")
+            self.logger.error(f"发送失败: {response.text}")
 
     def fetch_page(self):
         """获取网页内容"""
@@ -119,18 +133,18 @@ class VisaMonitor:
                 )
                 resp.raise_for_status()
                 return resp.text
-            except requests.exceptions.ConnectionError as e:
+            except (requests.exceptions.ConnectionError, requests.Timeout) as e:
                 # 仅处理连接类异常（含10054）
                 retry_count += 1
-                if retry_count > self.max_retries:
-                    self.log(f"最终请求失败（重试{retry_count}次后）: {str(e)}", level="error")
+                if retry_count > max_retries:
+                    self.logger.error(f"最终请求失败（重试{retry_count}次后）: {str(e)}")
                     return None
                 # 计算等待时间（指数退避：1s → 2s → 4s → 8s...）
                 delay = self.initial_delay * (self.backoff_factor ** (retry_count - 1))
-                self.log(f"第{retry_count}次重试（等待{delay}秒后）...", level="info")
+                self.logger.info(f"第{retry_count}次重试（等待{delay}秒后）...")
                 time.sleep(delay)
             except Exception as e:
-                self.log(f"页面获取失败: {str(e)}", level="error")
+                self.logger.error(f"页面获取失败: {str(e)}")
                 return None
 
     def parse_content(self, html):
@@ -214,11 +228,11 @@ class VisaMonitor:
     def run(self):
         """启动监控"""
         times = 0
-        self.log(f"开始监控 {CONFIG['target_url']}")
+        self.logger.info(f"开始监控 {CONFIG['target_url']}")
         try:
             while True:
                 times += 1
-                self.log(f"当前监控轮次：{times}, 当前时间: {datetime.now()}")
+                self.logger.info(f"当前监控轮次：{times}, 当前时间: {datetime.now()}")
                 try:
                     html = self.fetch_page()
                     if html:
@@ -226,20 +240,21 @@ class VisaMonitor:
                         changes = self.compare_content(self.last_state, current)
 
                         if changes:
-                            self.log(f"检测到更新: {current['title']}")
+                            self.logger.info(f"检测到更新: {current['title']}")
                             self.send_bark("alarm", changes, "LJnXEdnVYB4yEDW2cXQuSb")
+                            self.send_bark("alarm", changes, "hpqcbhJG9xxc4wtNm7s4o")
                             self.save_state(current)
                         else:
-                            self.log("内容无变化")
+                            self.logger.info("内容无变化")
 
                     self.last_state = self.last_state or current
                 except Exception as e:
-                    self.log(f"监控异常: {str(e)}", "error")
+                    self.logger.error(f"监控异常: {str(e)}")
 
                 time.sleep(CONFIG["check_interval"])
 
         except KeyboardInterrupt:
-            self.log("监控服务已手动停止")
+            self.logger.error("监控服务已手动停止")
 
 
 # ===== 主程序 =====
