@@ -24,7 +24,7 @@ CONFIG = {
     },
 
     # 监控参数
-    "check_interval": 3600,  # 检查间隔(秒)
+    "check_interval": 300,  # 检查间隔(秒)
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "storage_file": "last_state.json",  # 状态存储文件
     "log_file": "visa_monitor.log",  # 日志文件路径（新增）
@@ -247,7 +247,7 @@ class VisaMonitor:
                         else:
                             self.logger.info("内容无变化")
 
-                    self.last_state = self.last_state or current
+                    self.last_state = current or self.last_state
                 except Exception as e:
                     self.logger.error(f"监控异常: {str(e)}")
 
